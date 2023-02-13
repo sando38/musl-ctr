@@ -1,0 +1,123 @@
+name: 'Build and publish container images'
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'pkgrel'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_REPO: docker.io/${{ github.repository }}
+  PKGREL_FILE: pkgrel
+
+jobs:
+  build-test-push:
+    name: musl v${{ matrix.musl }} - build & push container images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+    strategy:
+      matrix:
+        musl: [1.1.7, 1.1.8, 1.1.9, 1.1.10, 1.1.11, 1.1.12, 1.1.13, 1.1.14, 1.1.15, 1.1.16, 1.1.17, 1.1.18, 1.1.19, 1.1.20, 1.1.21, 1.1.22, 1.1.23, 1.1.24, 1.2.0, 1.2.1, 1.2.2, 1.2.3]
+        #arch: [amd64]
+      fail-fast: false
+      max-parallel: 1
+    steps:
+      -
+        name: Check out repository code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      -
+        name: Extract test environment variables ...
+        run: |
+          echo "SHA512_SUM=$(wget https://musl.libc.org/releases/musl-${{ matrix.musl }}.tar.gz -O - \
+                | sha512sum | awk '{print $1}')" >> $GITHUB_ENV
+          echo "SUFFIX=$(cat ${{ env.PKGREL_FILE }})" >> $GITHUB_ENV
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      -
+        name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      -
+        name: Log in to DockerHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_REPO }}
+          tags: |
+            ${{ matrix.musl }}-${{ env.SUFFIX }}
+            ${{ matrix.musl }}
+      -
+        name: Build linux/amd64 image first
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            MUSL_VSN=${{ matrix.musl }}
+            SHA512_SUM=${{ env.SHA512_SUM }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+      -
+        name: Smoke Test
+        run: |
+          set -x
+          docker run --rm --init \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.musl }} \
+            ldd /bin/busybox
+          docker run --rm --init \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.musl }} \
+            busybox
+      -
+        name: Check if arm64 is supported or not
+        run: |
+          if dpkg --compare-versions ${{ matrix.musl }} le "1.1.6"
+          then echo "PLATFORMS=linux/amd64" >> $GITHUB_ENV
+          else echo "PLATFORMS=linux/amd64,linux/arm64" >> $GITHUB_ENV
+          fi
+      -
+        name: Build and push ${{ env.PLATFORMS }}
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            MUSL_VSN=${{ matrix.musl }}
+            SHA512_SUM=${{ env.SHA512_SUM }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+#      -
+#        name: Update DockerHub README
+#        uses: peter-evans/dockerhub-description@v3
+#        with:
+#          username: ${{ secrets.DOCKERHUB_USERNAME }}
+#          password: ${{ secrets.DOCKERHUB_TOKEN }}
+#          repository: ${{ github.repository }}
+#          readme-filepath: README.md
+#          short-description: Simple container with musl-libc and busybox
