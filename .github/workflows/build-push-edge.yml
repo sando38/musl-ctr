@@ -1,0 +1,90 @@
+name: 'Weekly build and publish edge container images'
+
+on:
+  schedule:
+    - cron: '22 2 */7 * *' # every 6 days to avoid gha cache being evicted
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_REPO: docker.io/${{ github.repository }}
+
+jobs:
+  build-test-push:
+    name: musl edge - build & push container images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      # This is used to complete the identity challenge
+      # with sigstore/fulcio when running outside of PRs.
+      id-token: write
+    steps:
+      -
+        name: Check out repository code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      -
+        name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+      -
+        name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      -
+        name: Log in to DockerHub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.DOCKERHUB_REPO }}
+          tags: |
+            edge
+      -
+        name: Build linux/amd64 image first
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            MUSL_VSN=master
+          file: Dockerfile.edge
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+      -
+        name: Smoke Test
+        run: |
+          set -x
+          docker run --rm --init \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge \
+            ldd /bin/busybox
+          docker run --rm --init \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:edge \
+            busybox
+      -
+        name: Build and push linux/amd64,linux/arm64
+        uses: docker/build-push-action@v3
+        with:
+          build-args: |
+            MUSL_VSN=master
+          file: Dockerfile.edge
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
