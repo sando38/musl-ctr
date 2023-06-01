@@ -23,7 +23,7 @@ be complete.
 E.g. use in new Dockerfile like
 
 ```
-ARG MUSL_VSN='1.2.3'
+ARG MUSL_VSN='1.2.4'
 FROM docker.io/sando38/musl-ctr:${MUSL_VSN}
 COPY /app /app
 ...
